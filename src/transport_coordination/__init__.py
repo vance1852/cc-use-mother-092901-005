@@ -1,5 +1,6 @@
-"""技能赛训协作基础服务的服务端基础包。"""
+"""综合交通协同服务：基础登记能力与旅游包车联审履约能力。"""
 
+from .charter import CharterService
 from .service import DomainService
 
-__all__ = ["DomainService"]
+__all__ = ["DomainService", "CharterService"]

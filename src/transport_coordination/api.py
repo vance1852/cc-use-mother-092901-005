@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from .charter import CharterService
 from .errors import DomainError, ValidationError
 from .service import DomainService
 from .storage import Database
@@ -48,11 +49,54 @@ def route(service: DomainService, method: str, path: str, body: dict[str, Any] |
             query = parse_qs(parsed.query)
             after = int(query.get("after_sequence", ["0"])[0])
             return 200, {"items": service.audit_events(after)}
+        # ------------------------------------------------- 旅游包车联审
+        if isinstance(service, CharterService):
+            status, payload = route_charter(service, method, parsed, body, actor_id)
+            if status is not None:
+                return status, payload
         return 404, {"error": "route_not_found", "message": "接口不存在"}
     except DomainError as exc:
         return exc.status, {"error": exc.code, "message": str(exc)}
     except (TypeError, ValueError) as exc:
         return 400, {"error": "invalid_request", "message": str(exc)}
+
+
+def route_charter(service: CharterService, method: str, parsed, body: dict[str, Any],
+                  actor_id: str) -> tuple[int | None, dict[str, Any] | None]:
+    query = parse_qs(parsed.query)
+    path = parsed.path
+    if method == "POST":
+        posting = {
+            "/charter/regions": service.register_region,
+            "/charter/vehicles": service.register_vehicle,
+            "/charter/drivers": service.register_driver,
+            "/charter/closures": service.register_closure,
+            "/charter/filings": service.file_trip,
+            "/charter/permit-decisions": service.decide_permit,
+            "/charter/certificates": service.issue_certificate,
+            "/charter/amendments": service.amend_filing,
+            "/charter/start": service.start_trip,
+            "/charter/complete": service.complete_trip,
+        }
+        handler = posting.get(path)
+        if handler:
+            result = handler(actor_id=actor_id, **body)
+            return 200 if result.replayed else 201, result.as_dict()
+    if method == "GET":
+        if path == "/charter/pending-permits":
+            return 200, service.pending_permits(actor_id)
+        if path == "/charter/enforcement":
+            kwargs: dict[str, Any] = {"actor_id": actor_id}
+            for key in ("certificate_no", "plate", "at"):
+                if query.get(key):
+                    kwargs[key] = query[key][0]
+            return 200, service.enforcement_check(**kwargs)
+        if path.startswith("/charter/filings/"):
+            filing_id = path.split("/")[-1]
+            if query.get("view", [""])[0] == "agency":
+                return 200, service.agency_view(actor_id, filing_id)
+            return 200, service.get_filing(actor_id, filing_id)
+    return None, None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -99,7 +143,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
     database = Database(args.database)
-    Handler.service = DomainService(database)
+    Handler.service = CharterService(database)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     try:
         server.serve_forever()
